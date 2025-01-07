@@ -1,0 +1,384 @@
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+knitr::opts_chunk$set(fig.width=5, fig.height=4)
+
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+library(MASS)
+library(dplyr)
+library(leaps)
+library(glmnet)
+library(tidyr)
+library(ggplot2)
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+run_forward <- function(X, y) {
+  df <- data.frame(Y = y, X = X[, -1]) 
+  colnames(df) <- c("Y", paste0("X", 1:(ncol(X) - 1)))
+  initial_model <- lm(Y ~ 1, data = df)
+  full_model <- lm(Y ~ ., data = df)
+  stepwise_model <- stepAIC(initial_model, scope = list(lower = ~1, upper = full_model), direction = "forward", trace = FALSE)
+  
+
+  selected_features <- names(coef(stepwise_model))[-1] 
+  return(as.numeric(sub("X", "", selected_features)))   
+}
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+
+run_backward <- function(X, y) {
+  df <- data.frame(Y = y, X = X[, -1])
+  colnames(df) <- c("Y", paste0("X", 1:(ncol(X) - 1)))
+  full_model <- lm(Y ~ ., data = df)
+  stepwise_model <- stepAIC(full_model, direction = "backward", trace = FALSE)
+  
+  selected_features <- names(coef(stepwise_model))[-1]
+  return(as.numeric(sub("X", "", selected_features)))
+
+}
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+-
+run_lasso <- function(X, y) {
+  lasso_model <- cv.glmnet(X[, -1], y, alpha = 1)  
+
+
+  coefs <- coef(lasso_model, s = "lambda.min")[-1]  
+  which(coefs != 0)  
+}
+
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+
+run_elastic_net <- function(X, y) {
+  elastic_net_model <- cv.glmnet(X[, -1], y, alpha = 0.5)  
+  coefs <- coef(elastic_net_model, s = "lambda.min")[-1]  
+  which(coefs != 0) 
+}
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+library(MASS)  
+
+
+generate_data <- function(n, p = 10, correlation = 0.9) {
+  
+
+  cov_matrix <- diag(1, p)  
+  cov_matrix[1, 6] <- correlation  
+  cov_matrix[6, 1] <- correlation
+  cov_matrix[2, 7] <- correlation  
+  cov_matrix[7, 2] <- correlation
+  
+
+  X <- mvrnorm(n, mu = rep(0, p), Sigma = cov_matrix)
+  
+
+  X <- cbind(1, X)
+  
+
+  beta <- c(1 ,3, -2, 4, 2, 3, 0, 0, 0, 0, 0)   
+  
+
+  epsilon <- rnorm(n, mean = 0, sd = 1)
+  Y <- X %*% beta + epsilon 
+  
+  list(X = X, y = Y, beta = beta)
+}
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+calculate_tpr_fpr <- function(selected_features, true_indices) {
+
+  num_features <- length(selected_features)
+  true_vector <- rep(0, num_features)
+  true_vector[true_indices] <- 1
+  
+
+  true_positives <- sum(selected_features == 1 & true_vector == 1)
+  total_positives <- sum(true_vector == 1)
+  TPR <- true_positives / total_positives
+  
+
+  false_positives <- sum(selected_features == 1 & true_vector == 0)
+  total_negatives <- sum(true_vector == 0)
+  FPR <- false_positives / total_negatives
+  
+
+  return(list(TPR = TPR, FPR = FPR))
+}
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+
+ 
+run_simulation <- function(num_iterations = 1000, sample_sizes = c(50, 100, 500, 1000), p = 10, correlation = 0.9) {
+  set.seed(123)
+  results <- data.frame(
+    Method = character(),
+    SampleSize = numeric(),
+    Iteration = integer(),
+    TPR = numeric(),
+    FPR = numeric(),
+    SelectedFeatures = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (sample_size in sample_sizes) {
+    for (i in 1:num_iterations) {
+      data <- generate_data(sample_size, p, correlation)
+      X <- data$X
+      y <- data$y
+      
+
+      true_indices <- 1:5  
+      
+
+      forward_selected <- run_forward(X, y)
+      forward_coefs <- rep(0, p)
+      if (length(forward_selected) > 0) forward_coefs[forward_selected] <- 1
+      forward_tpr_fpr <- calculate_tpr_fpr(forward_coefs, true_indices)
+      results <- rbind(results, data.frame(
+        Method = "Forward",
+        SampleSize = sample_size,
+        Iteration = i,
+        TPR = forward_tpr_fpr$TPR,
+        FPR = forward_tpr_fpr$FPR,
+        SelectedFeatures = paste0("X", forward_selected, collapse = ", ")
+      ))
+      
+
+      backward_selected <- run_backward(X, y)
+      backward_coefs <- rep(0, p)
+      if (length(backward_selected) > 0) backward_coefs[backward_selected] <- 1
+      backward_tpr_fpr <- calculate_tpr_fpr(backward_coefs, true_indices)
+      results <- rbind(results, data.frame(
+        Method = "Backward",
+        SampleSize = sample_size,
+        Iteration = i,
+        TPR = backward_tpr_fpr$TPR,
+        FPR = backward_tpr_fpr$FPR,
+        SelectedFeatures = paste0("X", backward_selected, collapse = ", ")
+      ))
+      
+
+      lasso_selected <- run_lasso(X, y)
+      lasso_coefs <- rep(0, p)
+      if (length(lasso_selected) > 0) lasso_coefs[lasso_selected] <- 1
+      lasso_tpr_fpr <- calculate_tpr_fpr(lasso_coefs, true_indices)
+      results <- rbind(results, data.frame(
+        Method = "Lasso",
+        SampleSize = sample_size,
+        Iteration = i,
+        TPR = lasso_tpr_fpr$TPR,
+        FPR = lasso_tpr_fpr$FPR,
+        SelectedFeatures = paste0("X", lasso_selected, collapse = ", ")
+      ))
+      
+
+      elastic_net_selected <- run_elastic_net(X, y)
+      elastic_net_coefs <- rep(0, p)
+      if (length(elastic_net_selected) > 0) elastic_net_coefs[elastic_net_selected] <- 1
+      elastic_net_tpr_fpr <- calculate_tpr_fpr(elastic_net_coefs, true_indices)
+      results <- rbind(results, data.frame(
+        Method = "Elastic Net",
+        SampleSize = sample_size,
+        Iteration = i,
+        TPR = elastic_net_tpr_fpr$TPR,
+        FPR = elastic_net_tpr_fpr$FPR,
+        SelectedFeatures = paste0("X", elastic_net_selected, collapse = ", ")
+      ))
+    }
+  }
+  
+  return(results)
+}
+
+
+
+## ----include=FALSE, cache= TRUE--------------------------------------------------------------------------------------------------------
+
+simulation_results <- run_simulation(num_iterations = 1000, sample_sizes = c(50, 100, 500, 1000))
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+print(simulation_results)
+
+
+## ----echo=FALSE, fig.height=3, fig.width=4, fig.align="center"-------------------------------------------------------------------------
+
+overall_average_results <- simulation_results %>%
+    group_by(Method) %>%
+    summarise(
+        Avg_TPR = mean(TPR),
+        Avg_FPR = mean(FPR)
+    )
+
+overall_average_long <- overall_average_results %>%
+    pivot_longer(cols = c(Avg_TPR, Avg_FPR), names_to = "Metric", values_to = "Average") %>%
+    mutate(Metric = ifelse(Metric == "Avg_TPR", "TPR", "FPR"))
+
+
+overall_average_long$Method <- factor(overall_average_long$Method, levels = c("Elastic Net", "Lasso", "Forward", "Backward"))
+
+
+ggplot(overall_average_long, aes(x = Method, y = Average, fill = Metric)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    labs(
+        x = "Method",
+        y = "Average Rate"
+    ) +
+    ggtitle("Average TPR and FPR by Method and sample size") +
+    theme_minimal() +
+    scale_fill_brewer(palette = "Set1") +
+    theme(
+        plot.title = element_text(size = 8, hjust = 0.5),  
+        axis.title = element_text(size = 10),            
+        axis.text = element_text(size = 6),            
+        legend.text = element_text(size = 8),        
+        legend.title = element_text(size = 9)        
+    )
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+calculate_feature_selection_percentage <- function(simulation_results, num_features = 10) {
+
+  feature_selection_counts <- simulation_results %>%
+    mutate(SelectedFeaturesList = strsplit(SelectedFeatures, ", ")) %>%
+    unnest(SelectedFeaturesList) %>%
+    mutate(SelectedFeaturesList = as.numeric(sub("X", "", SelectedFeaturesList))) %>%
+    filter(!is.na(SelectedFeaturesList)) %>% 
+    group_by(Method, SampleSize, SelectedFeaturesList) %>%
+    summarise(Count = n(), .groups = 'drop') %>%
+    mutate(Percentage = (Count / max(simulation_results$Iteration)) * 100) %>%
+    complete(Method, SampleSize, SelectedFeaturesList = 1:num_features, fill = list(Count = 0, Percentage = 0)) %>%
+    arrange(Method, SampleSize, SelectedFeaturesList)
+  
+  return(feature_selection_counts)
+}
+
+
+feature_selection_results <- calculate_feature_selection_percentage(simulation_results)
+
+
+print(feature_selection_results)
+
+
+## ----echo=FALSE, fig.align="center"----------------------------------------------------------------------------------------------------
+
+
+group_feature_selection_results <- function(feature_selection_results) {
+  relevant_features <- 1:5  
+  feature_selection_results %>%
+    mutate(
+      FeatureType = ifelse(SelectedFeaturesList %in% relevant_features, "TPR", "FPR")
+    ) %>%
+    group_by(Method, SampleSize, FeatureType) %>%
+    summarise(
+      AvgPercentage = mean(Percentage, na.rm = TRUE),
+      .groups = 'drop'
+    )
+}
+
+
+grouped_feature_selection_results <- group_feature_selection_results(feature_selection_results)
+
+
+grouped_feature_selection_results$Method <- factor(grouped_feature_selection_results$Method, 
+                                                   levels = c("Elastic Net", "Lasso", "Forward", "Backward"))
+
+
+ggplot(grouped_feature_selection_results, 
+       aes(x = FeatureType, y = AvgPercentage, fill = Method)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ SampleSize, scales = "free_y") +
+  labs(
+    title = "Average Selection Percentage for Relevant and Irrelevant Features by Method",
+    x = "Feature Type",
+    y = "Average Percentage of Times Selected"
+  ) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1") +
+  theme(
+    plot.title = element_text(size = 8, hjust = 0.5)
+  )
+  
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+
+average_results <- simulation_results %>%
+  group_by(Method, SampleSize) %>%
+  summarise(
+    Avg_TPR = mean(TPR),
+    Avg_FPR = mean(FPR)
+  ) %>%
+  arrange(SampleSize, Method)
+
+
+print(average_results)
+
+
+## ----echo=FALSE, cache= TRUE, fig.height=4, fig.width=6, fig.align="center"------------------------------------------------------------
+library(ggplot2)
+
+ggplot(feature_selection_results, aes(x = factor(SelectedFeaturesList), y = Percentage, fill = Method)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    facet_wrap(~ SampleSize, scales = "free_y") +
+    labs(
+        title = "Feature Selection Percentage by Method and Sample Size",
+        x = "Feature",
+        y = "Percentage of Times Selected"
+    ) +
+    theme_minimal() +
+    scale_fill_brewer(palette = "Set1") +
+    theme(
+        plot.title = element_text(size = 11, hjust = 0.5),   
+        axis.title.x = element_text(size = 10),              
+        axis.title.y = element_text(size = 10),            
+        axis.text.x = element_text(size = 8),             
+        axis.text.y = element_text(size = 8),              
+        strip.text = element_text(size = 9),          
+        legend.title = element_text(size = 9),          
+        legend.text = element_text(size = 8)                 
+    )
+
+
+
+## ----include=FALSE---------------------------------------------------------------------------------------------------------------------
+
+library(dplyr)
+library(broom) 
+
+
+ci_results <- simulation_results %>%
+  group_by(Method, SampleSize) %>%
+  summarise(
+    Avg_TPR = mean(TPR),
+    TPR_CI = sd(TPR) / sqrt(n()) * qt(0.975, df = n() - 1),
+    Avg_FPR = mean(FPR),
+    FPR_CI = sd(FPR) / sqrt(n()) * qt(0.975, df = n() - 1)
+  )
+
+
+print(ci_results)
+
+
+anova_results <- aov(FPR ~ Method + SampleSize, data = simulation_results)
+summary(anova_results)
+
+
+TukeyHSD(anova_results)
+
